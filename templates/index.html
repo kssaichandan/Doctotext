@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="DocToText — Extract text from PDF, Word, PowerPoint, and images">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📄</text></svg>">
+  <title>DocToText — Document Text Extractor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+
+  <!-- SECTION A: NAVBAR (fixed, top) -->
+  <nav id="navbar">
+    <div class="nav-left">
+      <span class="logo-icon">📄</span>
+      <span class="logo-text">DocToText</span>
+      <span class="logo-badge">v2.0</span>
+    </div>
+    <div class="nav-right">
+      <button id="themeToggleBtn" title="Toggle theme" aria-label="Toggle dark/light mode">🌙</button>
+      <button id="settingsOpenBtn" title="Settings" aria-label="Open settings">⚙️ Settings</button>
+    </div>
+  </nav>
+
+  <!-- SECTION B: API BANNER -->
+  <div id="apiBanner" class="api-banner hidden" role="alert">
+    <span>⚠️ No AI API key found — Images and scanned PDFs need a key (Gemini, OpenAI, Anthropic).</span>
+    <button id="bannerSettingsBtn">Add Key in Settings →</button>
+    <button id="bannerCloseBtn" aria-label="Dismiss banner">✕</button>
+  </div>
+
+  <!-- SECTION C: MAIN CONTAINER -->
+  <main id="mainContainer">
+
+    <!-- UPLOAD ZONE -->
+    <section id="uploadSection">
+      <div id="dropZone" role="button" tabindex="0" aria-label="Drop files here or click to upload">
+        <div class="drop-icon">📁</div>
+        <h2>Drop files here or <span class="click-link">click to upload</span></h2>
+        <p class="drop-sub">PDF · DOCX · PPTX · JPG · PNG — up to 50 MB each</p>
+        <div class="format-pills">
+          <span class="pill pdf">📕 PDF</span>
+          <span class="pill docx">📘 DOCX</span>
+          <span class="pill pptx">📙 PPTX</span>
+          <span class="pill img">🖼️ Images</span>
+        </div>
+        <input type="file" id="fileInput" multiple accept=".pdf,.docx,.pptx,.jpg,.jpeg,.png,.txt,.md" aria-hidden="true">
+      </div>
+      <div id="pastePanel">
+        <div class="paste-header">
+          <h3>Paste content</h3>
+          <button id="pasteClipboardBtn" class="btn-secondary" type="button">Paste Clipboard</button>
+        </div>
+        <textarea id="pasteTextInput" spellcheck="false" placeholder="Paste text here..."></textarea>
+        <div class="paste-actions">
+          <span id="pasteHint">Copied files, screenshots, and text are accepted.</span>
+          <button id="addPastedTextBtn" class="btn-action" type="button">Add Text</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- FILE LIST -->
+    <section id="fileListSection" class="hidden">
+      <div class="section-header">
+        <h3>Files <span id="fileCount" class="badge">0</span></h3>
+        <button id="clearFilesBtn" class="btn-ghost">✕ Clear All</button>
+      </div>
+      <div id="fileList" role="list"></div>
+    </section>
+
+    <!-- EXTRACT BUTTON -->
+    <div id="extractWrapper" class="hidden">
+      <button id="extractBtn" class="btn-primary btn-large" disabled>
+        <span class="btn-icon">🚀</span>
+        <span class="btn-text">Extract All Text</span>
+        <span class="btn-spinner hidden">⏳</span>
+      </button>
+      <div id="timerDisplay" class="timer-display hidden">
+        <div class="timer-row">
+          <span class="timer-label">⏱️ Extracting file <span id="timerFileIndex">1</span> of <span
+              id="timerFileTotal">1</span></span>
+          <span class="timer-eta" id="timerEta">Estimating...</span>
+        </div>
+        <div class="timer-bar-track">
+          <div class="timer-bar-fill" id="timerBarFill"></div>
+        </div>
+        <div class="timer-subrow">
+          <span id="timerElapsed">0s elapsed</span>
+          <span id="timerFileName" class="timer-filename"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATS BAR -->
+    <section id="statsBar" class="hidden" aria-live="polite">
+      <div class="stat-item">
+        <span class="stat-label">Words</span>
+        <span id="statWords" class="stat-value">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Characters</span>
+        <span id="statChars" class="stat-value">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Tokens (~)</span>
+        <span id="statTokens" class="stat-value">0</span>
+      </div>
+      <div id="compatBadges" class="compat-badges">
+        <span id="badgeChatGPT" class="compat-badge">ChatGPT 4o (128k)</span>
+        <span id="badgeClaude" class="compat-badge">Claude (200k)</span>
+        <span id="badgeGemini" class="compat-badge">Gemini (1M)</span>
+      </div>
+    </section>
+
+    <!-- ACTION BUTTONS -->
+    <div id="actionBar" class="action-bar hidden">
+      <button id="copyBtn" class="btn-action">📋 Copy All</button>
+      <button id="downloadTxtBtn" class="btn-action">💾 Download TXT</button>
+      <button id="downloadDocxBtn" class="btn-action">📝 Download DOCX</button>
+      <button id="downloadMdBtn" class="btn-action">Ⓜ️ Download MD</button>
+      <button id="splitBtn" class="btn-action">✂️ Split Chunks</button>
+      <button id="clearAllBtn" class="btn-action btn-danger">🗑️ Clear All</button>
+    </div>
+
+    <!-- OUTPUT AREA -->
+    <section id="outputSection" class="hidden">
+      <div class="output-header">
+        <h3>Extracted Text</h3>
+        <div class="output-header-right">
+          <span id="outputMeta" class="output-meta"></span>
+          <button id="fullscreenBtn" class="btn-ghost btn-small" title="Toggle Fullscreen" aria-label="Toggle full screen">⤢</button>
+        </div>
+      </div>
+      <textarea id="outputText" readonly spellcheck="false" aria-label="Extracted text output"
+        placeholder="Extracted text will appear here..."></textarea>
+    </section>
+
+  </main>
+
+  <!-- SECTION D: SETTINGS PANEL (fixed right) -->
+  <div id="settingsOverlay" class="overlay hidden"></div>
+
+  <aside id="settingsPanel" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="settings-header">
+      <h2>⚙️ Settings</h2>
+      <button id="settingsCloseBtn" aria-label="Close settings">✕</button>
+    </div>
+
+    <div class="settings-body">
+
+      <!-- API KEY SECTION -->
+      <div class="settings-section">
+        <h3>🔑 AI API Key</h3>
+        <p class="settings-sub">Required for images and scanned PDFs. Enter a key from Gemini, OpenAI, or Anthropic.
+          Stored ONLY in your browser.</p>
+        <label class="field-label" for="aiProviderSelect">OCR provider</label>
+        <div class="input-row">
+          <select id="aiProviderSelect" aria-label="OCR provider">
+            <option value="cloud">Cloud API key</option>
+            <option value="local">Local LLM</option>
+          </select>
+        </div>
+        <label class="field-label" for="cloudModelSelect">Cloud model</label>
+        <div class="input-row" id="cloudModelRow">
+          <select id="cloudModelSelect" aria-label="Cloud OCR model"></select>
+        </div>
+        <div class="input-row">
+          <input type="password" id="apiKeyInput" placeholder="AIza..., sk-..., sk-ant-..." autocomplete="off"
+            spellcheck="false" maxlength="50">
+          <button id="toggleKeyVisBtn" title="Show/hide key" aria-label="Toggle key visibility">👁</button>
+        </div>
+        <div class="btn-row">
+          <button id="testKeyBtn" class="btn-secondary">✅ Test Format</button>
+          <button id="saveKeyBtn" class="btn-primary">💾 Save Key</button>
+          <button id="deleteKeyBtn" class="btn-secondary btn-danger" style="padding: 8px 12px; margin-left: auto;">🗑️</button>
+        </div>
+        <div id="keyStatus" class="status-msg" aria-live="polite"></div>
+        <div class="info-box">
+          🔒 Your key is NEVER sent to our server except during file extraction.
+          It is stored only in your browser's localStorage.
+          Clear browser data to remove it at any time.
+        </div>
+      </div>
+
+        <div id="localLlmSettings" class="settings-section local-llm-box hidden">
+          <label class="field-label" for="localLlmUrlInput">Local server URL</label>
+          <input type="url" id="localLlmUrlInput" placeholder="http://localhost:11434" spellcheck="false">
+          <label class="field-label" for="localLlmModelInput">Vision model</label>
+          <div class="local-model-row">
+            <select id="localLlmModelInput" aria-label="Installed local LLM model"></select>
+            <button id="refreshLocalModelsBtn" class="btn-secondary" type="button">Refresh</button>
+          </div>
+          <div class="btn-row">
+            <button id="testLocalLlmBtn" class="btn-secondary" type="button">Test Local</button>
+            <button id="saveLocalLlmBtn" class="btn-primary" type="button">Save Local</button>
+          </div>
+          <div id="localLlmStatus" class="status-msg" aria-live="polite"></div>
+        </div>
+      <!-- GET A KEY SECTION -->
+      <div class="settings-section">
+        <h3>📖 Supported Providers</h3>
+        <ul class="steps-list">
+          <li><strong>Gemini:</strong> <a href="https://aistudio.google.com" target="_blank"
+              rel="noopener">aistudio.google.com</a> (starts with AIza...)</li>
+          <li><strong>OpenAI:</strong> <a href="https://platform.openai.com/api-keys" target="_blank"
+              rel="noopener">platform.openai.com</a> (starts with sk-...)</li>
+          <li><strong>Anthropic:</strong> <a href="https://console.anthropic.com/" target="_blank"
+              rel="noopener">console.anthropic.com</a> (starts with sk-ant...)</li>
+        </ul>
+        <div class="info-box success">
+          ✨ Gemini provides a generous free tier (1,500 requests/day). OpenAI and Anthropic require funded accounts for
+          image processing.
+        </div>
+      </div>
+
+      <!-- PREFERENCES SECTION -->
+      <div class="settings-section">
+        <h3>⚙️ Preferences</h3>
+
+        <label class="pref-row">
+          <span>Theme</span>
+          <button id="themeToggleSettings" class="toggle-btn">🌙 Dark</button>
+        </label>
+
+        <div class="settings-section">
+          <h3>✂️ Chunk Size</h3>
+          <p class="settings-sub">Controls how large each chunk is when splitting text for AI tools.</p>
+
+          <div class="chunk-control-row">
+            <input type="range" id="chunkSizeSlider" min="500" max="32000" step="500" value="4000"
+              aria-label="Chunk size slider">
+            <div class="chunk-number-box">
+              <input type="number" id="chunkSizeInput" min="500" max="32000" step="500" value="4000"
+                aria-label="Chunk size tokens">
+              <span class="chunk-unit">tokens</span>
+            </div>
+          </div>
+
+          <div class="chunk-presets">
+            <span class="chunk-preset-label">Presets:</span>
+            <button class="chunk-preset-btn" data-value="2000">2k</button>
+            <button class="chunk-preset-btn" data-value="4000">4k</button>
+            <button class="chunk-preset-btn" data-value="8000">8k</button>
+            <button class="chunk-preset-btn" data-value="16000">16k</button>
+            <button class="chunk-preset-btn" data-value="32000">32k</button>
+          </div>
+
+          <p class="chunk-size-hint" id="chunkSizeHint">≈ 16,000 characters · ~11 pages</p>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- SECTION E: CHUNKS MODAL (centered popup) -->
+  <div id="chunksOverlay" class="overlay hidden"></div>
+
+  <div id="chunksModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Split chunks">
+    <div class="modal-header">
+      <h2>✂️ Split Chunks</h2>
+      <div class="modal-meta">
+        <span id="chunksInfo"></span>
+        <button id="chunksCloseBtn" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div id="chunksList" class="chunks-list"></div>
+  </div>
+
+  <!-- SECTION F: TOAST CONTAINER -->
+  <div id="toastContainer" aria-live="assertive" aria-atomic="true"></div>
+
+  <!-- SCRIPT at end of body -->
+  <script src="/static/js/main.js"></script>
+
+</body>
+
+</html>
