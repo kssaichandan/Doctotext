@@ -229,3 +229,5 @@ If an image itself contains text, local LLM OCR can read that text when the imag
 - A Google Gemini API Key (optional, but highly recommended for OCR features)
 
 *(Note: Add your Gemini API key strictly through the "Settings" button in your browser UI—it will persist securely via your Local Storage.)*
+
+## contact info:kssaichandan@gmail.com
