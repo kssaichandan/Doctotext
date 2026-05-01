@@ -9,12 +9,11 @@ from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import fitz                          # PyMuPDF
 from docx import Document
-from docx.shared import Pt
 from pptx import Presentation
 from PIL import Image
 from google import genai             # NEW 2026 SDK — NOT google.generativeai
-from google.genai import types
-import io, os, base64, tempfile, re, json
+import io, os, base64, re, json
+import struct, zlib
 from urllib import request as urlrequest
 from urllib import error as urlerror
 from werkzeug.utils import secure_filename
@@ -237,8 +236,7 @@ def extract_docx(file_stream) -> str:
     try:
         body_xml = doc.element.body.xml if hasattr(doc.element.body, 'xml') else ''
         # Count image references that weren't caught in paragraphs
-        import re as _re
-        blip_count = len(_re.findall(r'<a:blip\s', body_xml))
+        blip_count = len(re.findall(r'<a:blip\s', body_xml))
         already_noted = sum(1 for t in text if 'Image found' in t)
         extra = blip_count - already_noted
         for _ in range(max(0, extra)):
@@ -276,7 +274,6 @@ def extract_pptx(file_stream) -> str:
 
             # Detect picture shapes — shape_type 13 is MSO_SHAPE_TYPE.PICTURE
             try:
-                from pptx.util import Pt as _Pt
                 from pptx.enum.shapes import PP_PLACEHOLDER
                 # shape.shape_type == 13 means it is a picture
                 if shape.shape_type == 13:
@@ -526,8 +523,8 @@ def extract():
     except Exception as e:
         traceback.print_exc()
         print(f"Error in /extract: {e}")
-        import werkzeug
-        if isinstance(e, werkzeug.exceptions.RequestEntityTooLarge):
+        from werkzeug.exceptions import RequestEntityTooLarge
+        if isinstance(e, RequestEntityTooLarge):
              return jsonify({"success": False, "error": "One or more files exceeded the 50MB total size limit."}), 413
         return jsonify({"success": False, "error": "An unexpected server error occurred."}), 500
 
@@ -548,12 +545,10 @@ def test_api_key():
             return jsonify({'valid': False, 'error': 'API key is empty'}), 400
 
         # Basic format check first (fast rejection before hitting API)
-        import re
         if not (key.startswith('AIza') or key.startswith('sk-')):
             return jsonify({'valid': False, 'error': "Key must start with 'AIza' (Gemini), 'sk-proj' (OpenAI), or 'sk-ant' (Anthropic)."}), 400
 
         # Real live test — generate a tiny 1x1 white PNG in memory
-        import struct, zlib
         def make_1x1_png():
             sig = b'\x89PNG\r\n\x1a\n'
             def chunk(name, data):
@@ -621,8 +616,6 @@ def test_local_llm():
         data = request.get_json() or {}
         base_url = data.get('base_url', DEFAULT_LOCAL_LLM_URL).strip()
         model = data.get('model', DEFAULT_LOCAL_LLM_MODEL).strip()
-
-        import struct, zlib
 
         def make_1x1_png():
             sig = b'\x89PNG\r\n\x1a\n'
@@ -704,7 +697,6 @@ def download_docx():
         filename += '.docx'
     
     # Strip illegal XML characters that crash python-docx
-    import re
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
 
     doc = Document()
