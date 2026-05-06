@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initApiKey();
   initEventListeners();
+  initChunkControls();
 });
 
 /* ═══ SECTION 3: THEME ══════════════════════ */
@@ -49,6 +50,23 @@ function setTheme(theme) {
 
   const themeToggleSettings = document.getElementById('themeToggleSettings');
   if (themeToggleSettings) themeToggleSettings.textContent = `${themeIcon} ${themeText}`;
+}
+
+/* ═══ SECTION 3b: TIMER UTILS ═══════════════ */
+
+function formatElapsed(seconds) {
+  if (seconds < 60) return `${seconds}s elapsed`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s elapsed`;
+}
+
+function formatEta(ms) {
+  const seconds = Math.ceil(ms / 1000);
+  if (seconds < 60) return `~${seconds}s remaining`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `~${m}m ${s}s remaining`;
 }
 
 /* ═══ SECTION 4: API KEY ════════════════════ */
@@ -424,21 +442,30 @@ async function extractAll() {
   const cloudAiModel = getCloudAiModel();
 
   try {
-    // Process queue with a concurrency limit to prevent freezing browser or hitting rate limits instantly
-    const CONCURRENCY_LIMIT = 3;
+    // Adaptive concurrency: local LLM GPU handles one at a time, cloud APIs benefit from parallelism
+    const CONCURRENCY_LIMIT = aiProvider === 'local' ? 1 : 3;
     let queueIndex = 0;
 
     async function worker() {
       while (queueIndex < uploadedFiles.length) {
         const i = queueIndex++;
         const file = uploadedFiles[i];
-        
+
         // Mark as actively processing right before sending request
         setFileCardStatus(file.name, 'processing');
 
         try {
           const formData = new FormData();
           formData.append('files', file);
+
+          // 10-minute timeout per file — prevents infinite hang if server dies
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 600000);
+
+          // Warn user if a file takes more than 30s (OCR-heavy files)
+          const longRunWarning = setTimeout(() => {
+            showToast(`⏳ ${file.name} is still processing (OCR may take several minutes)...`, 'info');
+          }, 30000);
 
           const response = await fetch('/extract', {
             method: 'POST',
@@ -450,8 +477,12 @@ async function extractAll() {
               'X-Local-LLM-URL': localLlmUrl,
               'X-Local-LLM-Model': localLlmModel
             },
-            body: formData
+            body: formData,
+            signal: controller.signal
           });
+
+          clearTimeout(timeoutId);
+          clearTimeout(longRunWarning);
 
           if (!response.ok) {
             const errData = await response.json().catch(() => ({}));
@@ -483,10 +514,16 @@ async function extractAll() {
           }
 
         } catch (fileErr) {
+          clearTimeout(timeoutId);
+          clearTimeout(longRunWarning);
           bytesProcessed += file.size;
           setFileCardStatus(file.name, 'failed');
           totalFailed++;
-          showToast(`❌ Failed: ${file.name}`, 'error');
+          if (fileErr.name === 'AbortError') {
+            showToast(`⏱️ ${file.name} timed out after 10 minutes — try a smaller file or faster model`, 'error');
+          } else {
+            showToast(`❌ Failed: ${file.name}`, 'error');
+          }
           allResults[i] = { error: fileErr.message, filename: file.name };
         }
       }
@@ -507,9 +544,9 @@ async function extractAll() {
       if (result && !result.error && result.text) {
         const sep = '═'.repeat(60);
         if (combinedText) {
-          combinedText += `\n\n${sep}\n📄 ${result.filename}\n${sep}\n\n`;
+          combinedText += '\n\n';
         }
-        combinedText += result.text;
+        combinedText += `${sep}\n📄 ${result.filename}\n${sep}\n\n${result.text}`;
         totalWords += result.word_count;
       }
     });
@@ -517,11 +554,13 @@ async function extractAll() {
 
     // Fill bar to 100% on completion
     timerBarFill.style.width = '100%';
-    timerEta.textContent = '✅ Done!';
 
     extractedText = combinedText;
     const totalChars = combinedText.length;
     const totalTokens = Math.floor(totalChars / 4);
+
+    // Determine if we have any usable output
+    const successCount = allResults.length - totalFailed;
 
     if (combinedText) {
       document.getElementById('outputText').value = combinedText;
@@ -533,18 +572,35 @@ async function extractAll() {
         total_words: totalWords,
         total_chars: totalChars,
         total_tokens: totalTokens,
-        files_processed: allResults.length - totalFailed
+        files_processed: successCount
       });
-
-      showToast(`✅ Done in ${formatElapsed(elapsedSeconds)} — ${allResults.length - totalFailed} file(s) extracted`, 'success');
     }
 
-    if (totalFailed > 0) {
+    // --- Toast & timer messaging for each scenario ---
+    if (totalFailed === 0 && totalPartial === 0) {
+      // All files extracted cleanly
+      timerEta.textContent = '✅ Done!';
+      showToast(`✅ Done in ${formatElapsed(elapsedSeconds)} — ${successCount} file(s) extracted`, 'success');
+
+    } else if (totalFailed > 0 && successCount === 0) {
+      // Every single file failed — nothing was extracted
+      timerEta.textContent = '❌ Failed';
+      showToast(`❌ All ${totalFailed} file(s) failed to extract`, 'error');
+
+    } else if (totalFailed > 0) {
+      // Some files succeeded, some failed
+      timerEta.textContent = '⚠️ Done with errors';
+      showToast(`✅ Done in ${formatElapsed(elapsedSeconds)} — ${successCount} file(s) extracted`, 'success');
       showToast(`⚠️ ${totalFailed} file(s) failed`, 'warning');
+
+    } else {
+      // No failures but some partial extractions
+      timerEta.textContent = '✅ Done!';
+      showToast(`✅ Done in ${formatElapsed(elapsedSeconds)} — ${successCount} file(s) extracted`, 'success');
     }
 
     if (totalPartial > 0) {
-      showToast(`⚠️ ${totalPartial} file(s) extracted with image OCR skipped`, 'warning');
+      showToast(`⚠️ ${totalPartial} file(s) extracted with image OCR skipped — add an API key or enable Local LLM for full extraction`, 'warning');
     }
 
   } catch (err) {
@@ -633,7 +689,7 @@ async function downloadFile(url, body) {
     let filename = body.filename;
     if (contentDisposition) {
       const filenameMatch = contentDisposition.match(/filename="(.+)"/);
-      if (filenameMatch.length > 1) {
+      if (filenameMatch && filenameMatch.length > 1) {
         filename = filenameMatch[1];
       }
     }
@@ -688,7 +744,8 @@ function openChunksModal() {
   if (!extractedText) return;
 
   const chunkInput = document.getElementById('chunkSizeInput');
-  const chunkSize = chunkInput ? parseInt(chunkInput.value) || 4000 : 4000;
+  const savedChunkSize = localStorage.getItem('chunkSize');
+  const chunkSize = chunkInput ? parseInt(chunkInput.value) || parseInt(savedChunkSize) || 4000 : parseInt(savedChunkSize) || 4000;
   const charsPerChunk = chunkSize * 4;
 
   let chunks = [];
@@ -820,7 +877,7 @@ async function testApiKey() {
     keyStatus.textContent = `❌ Network error: ${err.message}`;
   } finally {
     testBtn.disabled = false;
-    testBtn.textContent = '✅ Test Key';
+    testBtn.textContent = '✅ Test Format';
   }
 }
 
@@ -855,11 +912,11 @@ function deleteApiKey() {
   if (getAiProvider() !== 'local') {
     document.getElementById('apiBanner').classList.remove('hidden');
   }
-  
+
   const keyStatus = document.getElementById('keyStatus');
   keyStatus.textContent = '🗑️ Key removed from browser!';
   keyStatus.className = 'status-msg success';
-  
+
   setTimeout(() => {
     keyStatus.textContent = '';
     keyStatus.className = 'status-msg';
@@ -1194,4 +1251,4 @@ function initChunkControls() {
   updateChunkUI(saved);
 }
 
-initChunkControls();
+// initChunkControls is called from DOMContentLoaded above

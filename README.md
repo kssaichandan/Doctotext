@@ -6,15 +6,15 @@
 
 ## 🚀 What it Does
 - **Multi-Format Extraction**: Parses standard files (`.docx`, `.pdf`, `.pptx`) and extracts text locally using fast Python libraries (`PyMuPDF`, `python-docx`).
-- **Advanced OCR Integration**: Integrates directly with the **Gemini 2.5 Vision API** to perform deep Optical Character Recognition (OCR) on image files (`.jpg`, `.png`) or scanned PDFs where standard text selection isn't possible.
+- **Advanced OCR Integration**: Integrates with **Gemini, OpenAI, Anthropic** cloud APIs or a **local Ollama LLM** to perform deep Optical Character Recognition (OCR) on image files (`.jpg`, `.png`), scanned PDFs, and images embedded inside DOCX/PPTX documents.
 - **Stateless & Secure**: The backend operates entirely in memory. It *does not use a database* and NEVER saves your files, extracted text, or API keys to a server disk. Your API keys are strictly kept within your browser's local storage.
 - **Smart Chunking**: Split massive merged texts into cleanly broken segments based on character or token limits (e.g., 4000 tokens per chunk), which makes it perfect for feeding context into LLMs like ChatGPT or Claude.
-- **Export Formats**: Consolidate multiple uploaded document contents and download them as a single `.txt` or `.docx` file.
+- **Export Formats**: Consolidate multiple uploaded document contents and download them as a single `.txt`, `.docx`, or `.md` file.
 
 ## 💡 What it's Useful For
 - **Prompt Engineering & AI Context**: Have a massive 40-page PDF or PowerPoint presentation that you need ChatGPT or Claude to summarize? DocToText quickly strips away the styling and outputs pure text, chunked perfectly to bypass token limits.
 - **Image-to-Text Conversion**: Convert scanned receipts, screenshots, or unsearchable PDFs into usable text.
-- **Batch Processing Workspace**: Upload 5 different files of varying formats, get the text from all of them at once, and export it into a single clean `.docx` or `.txt` file, saving significant manual copy-pasting effort.
+- **Batch Processing Workspace**: Upload 10+ different files of varying formats, get the text from all of them at once, and export it into a single clean `.docx` or `.txt` file, saving significant manual copy-pasting effort.
 
 ## 🎨 UI/UX Features
 - **Premium Glassmorphism Design**: Frosted glass panels, dynamic gradients, smooth micro-animations, and sleek dark/light mode toggling.
@@ -22,6 +22,32 @@
 - **Real-Time Token Estimation**: Watch as the app dynamically calculates characters, words, and token counts to help you gauge LLM context limits.
 - **Paste Input**: Paste copied files, screenshots, clipboard images, or raw text directly into the app. Pasted text is queued as a `.txt` source.
 - **Local LLM OCR**: Use an Ollama-compatible local vision model instead of Gemini/OpenAI/Anthropic for images and scanned PDFs.
+- **Smart Status Messages**: Clear, distinct feedback for every scenario — full success, partial extraction, all-failed, timeouts, and per-file progress.
+
+## ⚡ Performance & Scaling
+
+DocToText is optimized to handle large workloads efficiently:
+
+| Feature | Detail |
+|---------|--------|
+| **Batch PDF Processing** | Scanned pages processed in batches of 10 to prevent memory exhaustion |
+| **Adaptive DPI** | Large PDF pages rendered at 150 DPI, standard pages at 200 DPI |
+| **Image Optimization** | All images resized and JPEG-compressed before OCR (1024px for local LLM, 1536px for cloud) |
+| **Adaptive Concurrency** | Local LLM: 1 thread (GPU bottleneck). Cloud API: 5 threads for parallelism |
+| **Retry Logic** | Transient cloud errors (429/500/503) automatically retried 3× with exponential backoff |
+| **Per-File Timeout** | 10-minute timeout per file prevents browser hanging. Clear timeout messages shown |
+| **Long-Running Feedback** | "Still processing..." toast after 30s so users know the app hasn't frozen |
+| **Production Server** | Gunicorn configured with 600s timeout, 4 workers, 2 threads |
+
+### Realistic Performance
+
+| Scenario | Cloud API | Local LLM |
+|----------|-----------|-----------|
+| 10 text-only files | ~5 seconds | ~5 seconds |
+| 10 files, 50 images total | ~30 seconds | ~50 minutes |
+| 100-page scanned PDF | ~60 seconds | ~100 minutes |
+
+> **Note**: Local LLM speed depends on your GPU. Cloud APIs are significantly faster for image-heavy workloads.
 
 ## Local LLM Setup
 
@@ -204,14 +230,14 @@ Keeping the LLM call in Flask avoids browser CORS problems and keeps the UI simp
 
 Current behavior depends on the file type:
 
-- Normal PDF text: extracted in reading order from each page.
-- Scanned PDF pages: OCR runs per page. The extracted OCR text is placed under that page, so it stays close to the original page position in the final output.
-- Standalone image files (`.jpg`, `.jpeg`, `.png`): OCR output appears as that image file's extracted text.
-- Pasted screenshots/images: treated like standalone image files.
-- DOCX/PPTX normal text: text is extracted from paragraphs, tables, slides, and notes.
-- Images embedded inside DOCX/PPTX: the app currently detects that an image exists and inserts a placeholder, but it does not extract the embedded image text yet.
+- **Normal PDF text**: Extracted in reading order from each page.
+- **Scanned PDF pages**: OCR runs per page in batches of 10. The extracted OCR text is placed under that page, so it stays close to the original page position in the final output.
+- **Standalone image files** (`.jpg`, `.jpeg`, `.png`): OCR output appears as that image file's extracted text.
+- **Pasted screenshots/images**: Treated like standalone image files.
+- **DOCX/PPTX normal text**: Text is extracted from paragraphs, tables, slides, and notes.
+- **Images embedded inside DOCX/PPTX**: When an API key is configured or Local LLM is enabled, images are extracted from the document and OCR'd in parallel. Without OCR, a placeholder is shown indicating an image was detected.
 
-So if a PDF page has normal text with a photo in the middle, the final output will keep the page text and OCR scanned pages by page. Exact image-in-the-middle placement is best for scanned full pages, not embedded DOCX/PPTX images.
+So if a PDF page has normal text with a photo in the middle, the final output will keep the page text and OCR scanned pages by page. For DOCX/PPTX files, embedded images are now fully OCR'd when a vision model is available.
 
 If an image itself contains text, local LLM OCR can read that text when the image is uploaded/pasted as an image file or when the whole PDF page is OCR'd. If the image contains another smaller image inside it, the local LLM will only output text it can visually read from the pixels. It will not preserve the actual picture, only text found in the picture.
 
@@ -221,13 +247,15 @@ If an image itself contains text, local LLM OCR can read that text when the imag
 - Local models can be slower than cloud OCR, especially on CPU-only machines.
 - OCR quality depends on the model, image clarity, font size, rotation, and language.
 - The final output is text only. Photos/images are not copied into the `.txt`, `.md`, or `.docx` export.
+- Large workloads (50+ images) with local LLM can take 30-60+ minutes depending on your GPU.
 
 ## 🛠️ Installation & Setup
 
 ### Prerequisites
 - Python 3.9+
-- A Google Gemini API Key (optional, but highly recommended for OCR features)
+- A Gemini, OpenAI, or Anthropic API Key (optional, but recommended for OCR features)
+- Ollama (optional, for local LLM OCR)
 
-*(Note: Add your Gemini API key strictly through the "Settings" button in your browser UI—it will persist securely via your Local Storage.)*
+*(Note: Add your API key strictly through the "Settings" button in your browser UI—it will persist securely via your Local Storage.)*
 
 ## contact info:kssaichandan@gmail.com

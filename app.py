@@ -12,8 +12,8 @@ from docx import Document
 from pptx import Presentation
 from PIL import Image
 from google import genai             # NEW 2026 SDK — NOT google.generativeai
-import io, os, base64, re, json
-import struct, zlib
+import io, os, base64, re, json, time
+import struct, zlib, socket
 from urllib import request as urlrequest
 from urllib import error as urlerror
 from werkzeug.utils import secure_filename
@@ -93,13 +93,32 @@ def list_local_llm_models(base_url: str) -> list[str]:
     return sorted(set(names), key=str.lower)
 
 
+def _prepare_image_for_ocr(image: Image.Image, max_dim: int = 1536) -> Image.Image:
+    """Resize and convert image for optimal OCR processing.
+    Use max_dim=1024 for local LLM, 1536 for cloud APIs."""
+    if image.mode in ('RGBA', 'P', 'LA'):
+        image = image.convert('RGB')
+    w, h = image.size
+    if max(w, h) <= max_dim:
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        return image
+    ratio = max_dim / max(w, h)
+    new_size = (int(w * ratio), int(h * ratio))
+    return image.resize(new_size, Image.LANCZOS)
+
+
+def _encode_image_b64(image: Image.Image, quality: int = 85) -> str:
+    """Encode a PIL Image to a base64 JPEG string."""
+    buffered = io.BytesIO()
+    image.save(buffered, format='JPEG', quality=quality)
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+
 def call_local_llm_ocr(base_url: str, model: str, image: Image.Image, prompt: str) -> str:
     """Call a local Ollama-compatible vision model for OCR."""
-    buffered = io.BytesIO()
-    if image.mode in ('RGBA', 'P'):
-        image = image.convert('RGB')
-    image.save(buffered, format="PNG")
-    img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    image = _prepare_image_for_ocr(image, max_dim=1024)
+    img_b64 = _encode_image_b64(image, quality=85)
 
     payload = {
         'model': (model or DEFAULT_LOCAL_LLM_MODEL).strip(),
@@ -115,15 +134,31 @@ def call_local_llm_ocr(base_url: str, model: str, image: Image.Image, prompt: st
     )
 
     try:
-        with urlrequest.urlopen(req, timeout=180) as response:
+        with urlrequest.urlopen(req, timeout=300) as response:
             result = json.loads(response.read().decode('utf-8'))
+    except (TimeoutError, socket.timeout):
+        return f'[LOCAL LLM ERROR: Request timed out. The local model at {base_url or DEFAULT_LOCAL_LLM_URL} took too long to respond. Try a smaller/faster model.]'
     except urlerror.URLError as e:
+        if isinstance(e.reason, (TimeoutError, socket.timeout)):
+            return f'[LOCAL LLM ERROR: Request timed out. The local model at {base_url or DEFAULT_LOCAL_LLM_URL} took too long. Try a smaller/faster model.]'
         return f'[LOCAL LLM ERROR: Could not connect to local LLM at {base_url or DEFAULT_LOCAL_LLM_URL}. {str(e)[:160]}]'
+    except Exception as e:
+        return f'[LOCAL LLM ERROR: {str(e)[:200]}]'
 
     text = (result.get('response') or '').strip()
     if not text:
         return '[LOCAL LLM ERROR: Empty response. Check that the selected local model supports vision/images.]'
     return text
+
+
+MAX_OCR_RETRIES = 3
+RETRY_BACKOFF_BASE = 2  # seconds
+
+def _is_retryable_error(error_msg: str) -> bool:
+    """Check if an OCR error is transient and worth retrying."""
+    retryable = ('429', '500', '503', 'rate limit', 'overloaded', 'temporarily')
+    lower = error_msg.lower()
+    return any(marker in lower for marker in retryable)
 
 
 def call_ai_ocr(
@@ -141,77 +176,85 @@ def call_ai_ocr(
 
     if not api_key:
         return "[No API key found]"
-        
-    try:
-        if api_key.startswith('sk-ant'):
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
-            # convert image
-            buffered = io.BytesIO()
-            if image.mode in ('RGBA', 'P'):
-                image = image.convert('RGB')
-            image.save(buffered, format="PNG")
-            img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-            
-            response = client.messages.create(
-                model=resolve_cloud_model(api_key, cloud_model),
-                max_tokens=4000,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}}
-                    ]
-                }]
-            )
-            return response.content[0].text.strip()
-            
-        elif api_key.startswith('sk-'):
-            import openai
-            client = openai.OpenAI(api_key=api_key)
-            buffered = io.BytesIO()
-            if image.mode in ('RGBA', 'P'):
-                image = image.convert('RGB')
-            image.save(buffered, format="PNG")
-            img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-            
-            response = client.chat.completions.create(
-                model=resolve_cloud_model(api_key, cloud_model),
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
-                    ]
-                }]
-            )
-            return response.choices[0].message.content.strip()
-            
-        else: # Gemini default
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model=resolve_cloud_model(api_key, cloud_model),
-                contents=[prompt, image]
-            )
-            return response.text.strip()
-            
-    except Exception as e:
-        error_msg = str(e)
-        if '429' in error_msg or 'quota' in error_msg.lower():
-            return '[QUOTA EXCEEDED — You have used all free requests for this API key. Wait or use a new key.]'
-        elif '403' in error_msg or 'API_KEY_INVALID' in error_msg or 'invalid api key' in error_msg.lower():
-            return '[INVALID API KEY — Open Settings and check your API key]'
-        elif '404' in error_msg or 'not found' in error_msg.lower():
-            return '[MODEL NOT FOUND — The requested AI model is unavailable]'
-        else:
-            return f'[OCR ERROR: {error_msg[:200]}]'
+
+    # Prepare image once for all cloud providers (resize + encode)
+    prepared = _prepare_image_for_ocr(image, max_dim=1536)
+    img_b64 = _encode_image_b64(prepared, quality=90)
+
+    last_error = ''
+    for attempt in range(MAX_OCR_RETRIES):
+        try:
+            if api_key.startswith('sk-ant'):
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+                response = client.messages.create(
+                    model=resolve_cloud_model(api_key, cloud_model),
+                    max_tokens=4000,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}}
+                        ]
+                    }]
+                )
+                return response.content[0].text.strip()
+
+            elif api_key.startswith('sk-'):
+                import openai
+                client = openai.OpenAI(api_key=api_key)
+                response = client.chat.completions.create(
+                    model=resolve_cloud_model(api_key, cloud_model),
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                        ]
+                    }]
+                )
+                return response.choices[0].message.content.strip()
+
+            else:  # Gemini default — SDK handles encoding, pass prepared image
+                client = genai.Client(api_key=api_key)
+                response = client.models.generate_content(
+                    model=resolve_cloud_model(api_key, cloud_model),
+                    contents=[prompt, prepared]
+                )
+                return response.text.strip()
+
+        except Exception as e:
+            last_error = str(e)
+            if _is_retryable_error(last_error) and attempt < MAX_OCR_RETRIES - 1:
+                time.sleep(RETRY_BACKOFF_BASE ** (attempt + 1))
+                continue
+            break
+
+    # All retries exhausted or non-retryable error
+    if '429' in last_error or 'quota' in last_error.lower():
+        return '[QUOTA EXCEEDED — You have used all free requests for this API key. Wait or use a new key.]'
+    elif '403' in last_error or 'API_KEY_INVALID' in last_error or 'invalid api key' in last_error.lower():
+        return '[INVALID API KEY — Open Settings and check your API key]'
+    elif '404' in last_error or 'not found' in last_error.lower():
+        return '[MODEL NOT FOUND — The requested AI model is unavailable]'
+    else:
+        return f'[OCR ERROR: {last_error[:200]}]'
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # HELPER FUNCTION: extract_docx(file_stream) -> str
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def extract_docx(file_stream) -> str:
+def extract_docx(
+    file_stream,
+    api_key: str = '',
+    ai_provider: str = 'cloud',
+    local_llm_url: str = DEFAULT_LOCAL_LLM_URL,
+    local_llm_model: str = DEFAULT_LOCAL_LLM_MODEL,
+    cloud_model: str = ''
+) -> str:
+    has_ai_ocr = bool(api_key) or ai_provider == 'local'
     doc = Document(file_stream)
     text = []
+    ocr_tasks = []  # list of (insert_index, image_bytes)
 
     # Paragraphs — check for embedded images using XML namespace
     for i, para in enumerate(doc.paragraphs):
@@ -219,11 +262,29 @@ def extract_docx(file_stream) -> str:
         if stripped:
             text.append(stripped)
         # Detect inline images in paragraph XML
-        # Inline images live inside <a:blip> or <pic:pic> tags in the XML
         para_xml = para._element.xml if hasattr(para._element, 'xml') else ''
         if ('graphicData' in para_xml or 'pic:pic' in para_xml or
                 'a:blip' in para_xml or 'drawing' in para_xml.lower()):
-            text.append('[Image found — content not extracted. Add a Gemini API key to enable image OCR]')
+            if has_ai_ocr:
+                # Try to extract the actual image from document relationships
+                blip_rids = re.findall(r'r:embed="(rId\d+)"', para_xml)
+                img_extracted = False
+                for rid in blip_rids:
+                    try:
+                        rel = doc.part.rels[rid]
+                        if 'image' in rel.reltype:
+                            img_bytes = rel.target_part.blob
+                            placeholder_idx = len(text)
+                            text.append('[Extracting image text...]')
+                            ocr_tasks.append((placeholder_idx, img_bytes))
+                            img_extracted = True
+                            break
+                    except (KeyError, AttributeError):
+                        continue
+                if not img_extracted:
+                    text.append('[Image found — could not extract image data for OCR]')
+            else:
+                text.append('[Image found — content not extracted. Add a Gemini API key to enable image OCR]')
 
     # Tables
     for table in doc.tables:
@@ -235,27 +296,56 @@ def extract_docx(file_stream) -> str:
     # Shapes / text boxes (inline shapes in body XML)
     try:
         body_xml = doc.element.body.xml if hasattr(doc.element.body, 'xml') else ''
-        # Count image references that weren't caught in paragraphs
         blip_count = len(re.findall(r'<a:blip\s', body_xml))
-        already_noted = sum(1 for t in text if 'Image found' in t)
+        already_noted = sum(1 for t in text if 'Image found' in t or 'Extracting image' in t)
         extra = blip_count - already_noted
         for _ in range(max(0, extra)):
-            text.append('[Image found — content not extracted. Add a Gemini API key to enable image OCR]')
+            if not has_ai_ocr:
+                text.append('[Image found — content not extracted. Add a Gemini API key to enable image OCR]')
     except Exception:
-        pass  # never crash extraction over image detection
+        pass
+
+    # Process OCR tasks in parallel
+    if ocr_tasks:
+        from concurrent.futures import ThreadPoolExecutor
+        ocr_prompt = ('Extract ALL text from this image exactly as it appears. '
+                      'Return ONLY the raw extracted text — no commentary.')
+        max_workers = 1 if ai_provider == 'local' else 4
+
+        def process_docx_ocr(task):
+            idx, img_bytes = task
+            try:
+                img = Image.open(io.BytesIO(img_bytes))
+                return idx, call_ai_ocr(api_key, img, ocr_prompt, ai_provider,
+                                        local_llm_url, local_llm_model, cloud_model)
+            except Exception as e:
+                return idx, f'[Image OCR failed: {str(e)[:100]}]'
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, ocr_text in executor.map(process_docx_ocr, ocr_tasks):
+                text[idx] = ocr_text
 
     return '\n'.join(text)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # HELPER FUNCTION: extract_pptx(file_stream) -> str
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def extract_pptx(file_stream) -> str:
+def extract_pptx(
+    file_stream,
+    api_key: str = '',
+    ai_provider: str = 'cloud',
+    local_llm_url: str = DEFAULT_LOCAL_LLM_URL,
+    local_llm_model: str = DEFAULT_LOCAL_LLM_MODEL,
+    cloud_model: str = ''
+) -> str:
+    has_ai_ocr = bool(api_key) or ai_provider == 'local'
     prs = Presentation(file_stream)
     text = []
+    ocr_tasks = []  # list of (insert_index, image_bytes, slide_num)
 
     for i, slide in enumerate(prs.slides):
         text.append(f'--- Slide {i + 1} ---')
-        slide_has_image = False
+        slide_images = []  # collect image blobs for this slide
 
         for shape in slide.shapes:
             # Text frames
@@ -272,31 +362,36 @@ def extract_pptx(file_stream) -> str:
                     if cells:
                         text.append(' | '.join(cells))
 
-            # Detect picture shapes — shape_type 13 is MSO_SHAPE_TYPE.PICTURE
+            # Extract picture shapes for OCR
+            is_picture = False
             try:
-                from pptx.enum.shapes import PP_PLACEHOLDER
-                # shape.shape_type == 13 means it is a picture
-                if shape.shape_type == 13:
-                    slide_has_image = True
-                # Also catch placeholder images (shape_type 14 = PLACEHOLDER with image)
+                if shape.shape_type == 13:  # MSO_SHAPE_TYPE.PICTURE
+                    is_picture = True
                 elif hasattr(shape, 'placeholder_format') and shape.placeholder_format is not None:
-                    ph = shape.placeholder_format
-                    # placeholder type 18 = PICTURE placeholder
-                    if str(ph.type) in ('PP_PLACEHOLDER.PICTURE', '18'):
-                        slide_has_image = True
+                    if str(shape.placeholder_format.type) in ('PP_PLACEHOLDER.PICTURE', '18'):
+                        is_picture = True
             except Exception:
                 pass
 
-            # Check shape XML for embedded images as a fallback
-            try:
-                shape_xml = shape._element.xml if hasattr(shape._element, 'xml') else ''
-                if 'p:pic' in shape_xml or 'a:blip' in shape_xml:
-                    slide_has_image = True
-            except Exception:
-                pass
+            if not is_picture:
+                try:
+                    shape_xml = shape._element.xml if hasattr(shape._element, 'xml') else ''
+                    if 'p:pic' in shape_xml or 'a:blip' in shape_xml:
+                        is_picture = True
+                except Exception:
+                    pass
 
-        if slide_has_image:
-            text.append(f'[Image on slide {i + 1} — content not extracted. Add a Gemini API key to enable image OCR]')
+            if is_picture:
+                if has_ai_ocr:
+                    try:
+                        img_blob = shape.image.blob
+                        placeholder_idx = len(text)
+                        text.append(f'[Extracting image on slide {i + 1}...]')
+                        ocr_tasks.append((placeholder_idx, img_blob, i + 1))
+                    except Exception:
+                        text.append(f'[Image on slide {i + 1} — could not extract image data for OCR]')
+                else:
+                    text.append(f'[Image on slide {i + 1} — content not extracted. Add a Gemini API key to enable image OCR]')
 
         # Speaker notes
         if slide.has_notes_slide:
@@ -304,11 +399,34 @@ def extract_pptx(file_stream) -> str:
             if notes:
                 text.append(f'[Notes: {notes}]')
 
+    # Process OCR tasks in parallel
+    if ocr_tasks:
+        from concurrent.futures import ThreadPoolExecutor
+        ocr_prompt = ('Extract ALL text from this image exactly as it appears. '
+                      'Return ONLY the raw extracted text — no commentary.')
+        max_workers = 1 if ai_provider == 'local' else 4
+
+        def process_pptx_ocr(task):
+            idx, img_bytes, slide_num = task
+            try:
+                img = Image.open(io.BytesIO(img_bytes))
+                result = call_ai_ocr(api_key, img, ocr_prompt, ai_provider,
+                                     local_llm_url, local_llm_model, cloud_model)
+                return idx, result
+            except Exception as e:
+                return idx, f'[Image OCR on slide {slide_num} failed: {str(e)[:100]}]'
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, ocr_text in executor.map(process_pptx_ocr, ocr_tasks):
+                text[idx] = ocr_text
+
     return '\n'.join(text)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # HELPER FUNCTION: extract_pdf(file_bytes, api_key) -> dict
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OCR_BATCH_SIZE = 10  # pages per batch to limit memory
+
 def extract_pdf(
     file_bytes: bytes,
     api_key: str,
@@ -322,10 +440,9 @@ def extract_pdf(
     page_count = len(pdf)
     text_parts = [None] * page_count
     methods_used = set()
-    
-    ocr_tasks = []
+    ocr_page_nums = []
 
-    # Fast sequential pass for direct text and pixmap grabbing (PyMuPDF objects aren't thread-safe)
+    # PASS 1: Extract direct text, identify pages needing OCR
     for page_num in range(page_count):
         page = pdf[page_num]
         direct_text = page.get_text().strip()
@@ -335,21 +452,20 @@ def extract_pdf(
             methods_used.add('direct')
         else:
             if has_ai_ocr:
-                pix = page.get_pixmap(dpi=200)
-                img_bytes = pix.tobytes('png')
-                ocr_tasks.append((page_num, img_bytes))
+                ocr_page_nums.append(page_num)
             else:
                 text_parts[page_num] = (
                     f'Page {page_num + 1}: [Scanned page — add an AI API key or enable Local LLM '
                     f'in Settings to extract this page via OCR]'
                 )
                 methods_used.add('skipped')
-                
-    # Threaded pass for network I/O bound OCR calls to speed up queue
-    if ocr_tasks:
+
+    # PASS 2: OCR scanned pages in memory-efficient batches
+    if ocr_page_nums:
         from concurrent.futures import ThreadPoolExecutor
         methods_used.add('ocr')
-        
+        max_workers = 1 if ai_provider == 'local' else 5
+
         def process_ocr(task):
             p_num, i_bytes = task
             img = Image.open(io.BytesIO(i_bytes))
@@ -358,18 +474,29 @@ def extract_pdf(
                 'Extract ALL text from this scanned document page exactly as it appears. '
                 'Preserve all tables, lists, headings, and structure. '
                 'Return ONLY the raw extracted text — no commentary, no markdown.',
-                ai_provider,
-                local_llm_url,
-                local_llm_model,
-                cloud_model
+                ai_provider, local_llm_url, local_llm_model, cloud_model
             )
             return p_num, f'Page {p_num + 1} (OCR):\n{text}'
-            
-        # Using 5 concurrent threads avoids rate-limit spikes but vastly speeds up multipage PDFs
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            for p_num, result_text in executor.map(process_ocr, ocr_tasks):
-                text_parts[p_num] = result_text
 
+        # Process in batches to avoid loading all pixmaps into memory at once
+        for batch_start in range(0, len(ocr_page_nums), OCR_BATCH_SIZE):
+            batch = ocr_page_nums[batch_start:batch_start + OCR_BATCH_SIZE]
+            batch_tasks = []
+            for p_num in batch:
+                page = pdf[p_num]
+                # Adaptive DPI: lower for large pages to save memory and speed
+                long_side = max(page.rect.width, page.rect.height)
+                dpi = 150 if long_side > 1000 else 200
+                pix = page.get_pixmap(dpi=dpi)
+                batch_tasks.append((p_num, pix.tobytes('png')))
+                del pix  # free pixmap memory immediately
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for p_num, result_text in executor.map(process_ocr, batch_tasks):
+                    text_parts[p_num] = result_text
+            del batch_tasks  # free image bytes after batch
+
+    pdf.close()
     method = 'mixed' if len(methods_used) > 1 else (methods_used.pop() if methods_used else 'direct')
     return {
         'text': '\n\n'.join(filter(None, text_parts)),
@@ -475,9 +602,9 @@ def extract():
                     result['pages'] = pdf_data['pages']
                     result['method'] = pdf_data['method']
                 elif ext.lower() == '.docx':
-                    result['text'] = extract_docx(io.BytesIO(file_bytes))
+                    result['text'] = extract_docx(io.BytesIO(file_bytes), api_key, ai_provider, local_llm_url, local_llm_model, cloud_model)
                 elif ext.lower() == '.pptx':
-                    result['text'] = extract_pptx(io.BytesIO(file_bytes))
+                    result['text'] = extract_pptx(io.BytesIO(file_bytes), api_key, ai_provider, local_llm_url, local_llm_model, cloud_model)
                 elif ext.lower() in ['.txt', '.md']:
                     result['text'] = file_bytes.decode('utf-8', errors='replace')
                     result['method'] = 'paste'
@@ -608,7 +735,7 @@ def test_api_key():
             return jsonify({'valid': False, 'error': f'❌ Test failed: {error_msg[:120]}'}), 200
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ROUTE 4: POST /download-txt
+# ROUTE 4: POST /test-local-llm & /local-llm-models
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @app.route('/test-local-llm', methods=['POST'])
 def test_local_llm():

@@ -5,7 +5,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="DocToText — Extract text from PDF, Word, PowerPoint, and images">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📄</text></svg>">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📄</text></svg>">
   <title>DocToText — Document Text Extractor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -52,7 +53,8 @@
           <span class="pill pptx">📙 PPTX</span>
           <span class="pill img">🖼️ Images</span>
         </div>
-        <input type="file" id="fileInput" multiple accept=".pdf,.docx,.pptx,.jpg,.jpeg,.png,.txt,.md" aria-hidden="true">
+        <input type="file" id="fileInput" multiple accept=".pdf,.docx,.pptx,.jpg,.jpeg,.png,.txt,.md"
+          aria-hidden="true">
       </div>
       <div id="pastePanel">
         <div class="paste-header">
@@ -136,7 +138,8 @@
         <h3>Extracted Text</h3>
         <div class="output-header-right">
           <span id="outputMeta" class="output-meta"></span>
-          <button id="fullscreenBtn" class="btn-ghost btn-small" title="Toggle Fullscreen" aria-label="Toggle full screen">⤢</button>
+          <button id="fullscreenBtn" class="btn-ghost btn-small" title="Toggle Fullscreen"
+            aria-label="Toggle full screen">⤢</button>
         </div>
       </div>
       <textarea id="outputText" readonly spellcheck="false" aria-label="Extracted text output"
@@ -174,13 +177,14 @@
         </div>
         <div class="input-row">
           <input type="password" id="apiKeyInput" placeholder="AIza..., sk-..., sk-ant-..." autocomplete="off"
-            spellcheck="false" maxlength="50">
+            spellcheck="false">
           <button id="toggleKeyVisBtn" title="Show/hide key" aria-label="Toggle key visibility">👁</button>
         </div>
         <div class="btn-row">
           <button id="testKeyBtn" class="btn-secondary">✅ Test Format</button>
           <button id="saveKeyBtn" class="btn-primary">💾 Save Key</button>
-          <button id="deleteKeyBtn" class="btn-secondary btn-danger" style="padding: 8px 12px; margin-left: auto;">🗑️</button>
+          <button id="deleteKeyBtn" class="btn-secondary btn-danger"
+            style="padding: 8px 12px; margin-left: auto;">🗑️</button>
         </div>
         <div id="keyStatus" class="status-msg" aria-live="polite"></div>
         <div class="info-box">
@@ -190,20 +194,20 @@
         </div>
       </div>
 
-        <div id="localLlmSettings" class="settings-section local-llm-box hidden">
-          <label class="field-label" for="localLlmUrlInput">Local server URL</label>
-          <input type="url" id="localLlmUrlInput" placeholder="http://localhost:11434" spellcheck="false">
-          <label class="field-label" for="localLlmModelInput">Vision model</label>
-          <div class="local-model-row">
-            <select id="localLlmModelInput" aria-label="Installed local LLM model"></select>
-            <button id="refreshLocalModelsBtn" class="btn-secondary" type="button">Refresh</button>
-          </div>
-          <div class="btn-row">
-            <button id="testLocalLlmBtn" class="btn-secondary" type="button">Test Local</button>
-            <button id="saveLocalLlmBtn" class="btn-primary" type="button">Save Local</button>
-          </div>
-          <div id="localLlmStatus" class="status-msg" aria-live="polite"></div>
+      <div id="localLlmSettings" class="settings-section local-llm-box hidden">
+        <label class="field-label" for="localLlmUrlInput">Local server URL</label>
+        <input type="url" id="localLlmUrlInput" placeholder="http://localhost:11434" spellcheck="false">
+        <label class="field-label" for="localLlmModelInput">Vision model</label>
+        <div class="local-model-row">
+          <select id="localLlmModelInput" aria-label="Installed local LLM model"></select>
+          <button id="refreshLocalModelsBtn" class="btn-secondary" type="button">Refresh</button>
         </div>
+        <div class="btn-row">
+          <button id="testLocalLlmBtn" class="btn-secondary" type="button">Test Local</button>
+          <button id="saveLocalLlmBtn" class="btn-primary" type="button">Save Local</button>
+        </div>
+        <div id="localLlmStatus" class="status-msg" aria-live="polite"></div>
+      </div>
       <!-- GET A KEY SECTION -->
       <div class="settings-section">
         <h3>📖 Supported Providers</h3>
